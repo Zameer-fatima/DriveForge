@@ -1,0 +1,6 @@
+foreach(name tst_vehicle tst_telemetry tst_adas tst_parking tst_scenarios tst_recorded)
+    qt_add_executable(${name} ${name}.cpp)
+    target_link_libraries(${name} PRIVATE driveforge_core Qt6::Test)
+    add_test(NAME ${name} COMMAND ${name})
+endforeach()
+target_compile_definitions(tst_recorded PRIVATE SOURCE_DIR="${CMAKE_SOURCE_DIR}")
