@@ -48,7 +48,9 @@ Other options: `--quality low|medium|high`, `--camera front|rear|side|top|closeu
 | A, D / ←, → | Steer |
 | P | Pause / resume |
 | T | Show / hide graphs and event log |
-| M | Autonomous mode on/off (ACC 80 km/h + lane keeping + AEB; braking or steering = driver takeover) |
+| M | Autonomous mode on/off (ACC 80 km/h + lane keeping + AEB + overtaking; braking or steering = driver takeover) |
+| U | Autonomous overtaking on/off (in Autonomous mode: pass slower cars, change lane around obstacles) |
+| Mouse | Drag = orbit the camera round the car, wheel = zoom, double-click or Home = reset the camera |
 | C | ACC on/off (sets speed to current, min 30 km/h); `+` / `-` change set speed 5 km/h; `G` cycles time gap 1.2 / 1.8 / 2.4 s |
 | K | Lane keeping on/off (yields while you steer, re-centres afterwards) |
 | Q / E | Lane change left / right (needs lane keeping; refused if the target lane is occupied) |
@@ -100,6 +102,10 @@ Valid for dry-road, low-slip driving only. Equations and parameters: `docs/DESIG
   pedestrians, cuts the throttle near a target, and holds the brake at standstill while you keep accelerating.
 - **ACC** holds a set speed or follows a lead vehicle/obstacle at `5 m + time gap × speed`, down to standstill.
 - **Lane keeping** uses a Stanley controller with a comfort limit of 2 m/s² lateral acceleration; **lane change** is a 4 s cosine manoeuvre.
+- **Autonomous overtaking** (Autonomous mode only): the car overtakes a slower vehicle in a free lane and returns to its own lane. If a stationary
+  obstacle appears ahead, it changes lane around it at speed. If there is no free lane, or it is too close to swerve, it slows or brakes to a stop instead.
+  It uses the same safety rules as a manual lane change, reacts to a new obstacle even in the middle of an overtake, and returns to the lane it started in.
+  Press **U** to switch it off (the car then follows slower traffic and stops for obstacles).
 - Not modelled: sensor noise or dropouts, weather, tyre slip, other vehicles reacting to you, traffic rules. Do not treat
   tuning here as meaningful for real vehicles.
 
@@ -116,7 +122,7 @@ Limits: right-side perpendicular bays only (no parallel parking), start with hea
 
 ## Scenarios and reports
 
-Press **F2** (or the Scenarios button). Choose Highway, Obstacle, Pedestrian, or Parking, adjust the sliders, and:
+Press **F2** (or the Scenarios button). Choose Highway, Obstacle, Pedestrian, Parking, Overtaking, or Lane avoid, adjust the sliders, and:
 
 - **Run live** watches the scenario in the 3D scene (1–8× speed). The driver is scripted, so manual controls are locked; **Esc** aborts.
 - **Repeat 3× headless** runs it three times without rendering and checks that every run gives identical results.

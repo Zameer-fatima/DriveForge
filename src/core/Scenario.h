@@ -6,7 +6,7 @@
 
 namespace driveforge {
 
-enum class ScenarioId { Highway = 0, Obstacle, Pedestrian, Parking };
+enum class ScenarioId { Highway = 0, Obstacle, Pedestrian, Parking, Overtake, LaneAvoid };
 
 using ParamMap = std::map<std::string, double>;
 

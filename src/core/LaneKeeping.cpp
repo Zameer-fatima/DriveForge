@@ -17,7 +17,7 @@ void LaneKeeping::engage(const VehicleState& s) {
 
 void LaneKeeping::disengage() { changing_ = false; }
 
-bool LaneKeeping::startLaneChange(int dir, const VehicleState& s, const SensorReadings& sensors, std::string* reason) {
+bool LaneKeeping::canChangeLane(int dir, const VehicleState& s, const SensorReadings& sensors, std::string* reason) const {
     auto refuse = [&](const char* why) {
         if (reason) *reason = why;
         return false;
@@ -25,7 +25,7 @@ bool LaneKeeping::startLaneChange(int dir, const VehicleState& s, const SensorRe
     if (changing_) return refuse("lane change already in progress");
     const int target = targetLane_ + (dir < 0 ? -1 : 1);
     if (target < 0 || target >= road_.laneCount) return refuse("no lane in that direction");
-    if (s.speed < 3.0) return refuse("speed too low for a lane change");
+    if (s.speed < 2.0) return refuse("speed too low for a lane change");
 
     const double center = road_.laneCenter(target);
     for (const Detection& d : sensors.detections) {
@@ -37,8 +37,13 @@ bool LaneKeeping::startLaneChange(int dir, const VehicleState& s, const SensorRe
             return refuse("target lane occupied behind");
         }
     }
+    return true;
+}
+
+bool LaneKeeping::startLaneChange(int dir, const VehicleState& s, const SensorReadings& sensors, std::string* reason) {
+    if (!canChangeLane(dir, s, sensors, reason)) return false;
     fromLane_ = targetLane_;
-    toLane_ = target;
+    toLane_ = targetLane_ + (dir < 0 ? -1 : 1);
     changeDir_ = dir < 0 ? -1 : 1;
     changing_ = true;
     elapsed_ = 0.0;

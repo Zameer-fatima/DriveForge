@@ -58,6 +58,15 @@ private:
     bool aebBraked_ = false;
     bool autonomousDropped_ = false;
     bool aebWasArmed_ = true;
+
+    // Overtaking / lane-avoid scenarios
+    bool manoeuvreSeen_ = false;
+    double idleSince_ = -1.0;
+    bool obstacleSpawned_ = false;
+    double minSpeed_ = 1e9;
+    // Last known position of the scored target: the world removes things far behind the car, so remember it.
+    double targetY_ = 0.0;
+    bool targetSeen_ = false;
 };
 
 }  // namespace driveforge

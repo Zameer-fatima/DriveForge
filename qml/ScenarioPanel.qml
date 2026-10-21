@@ -46,17 +46,22 @@ Rectangle {
                 Layout.fillHeight: true
                 spacing: 8
 
-                RowLayout {
+                GridLayout {
                     Layout.fillWidth: true
+                    columns: 3
+                    columnSpacing: 6
+                    rowSpacing: 6
                     Repeater {
                         model: root.mgr.catalog
                         delegate: Btn {
                             required property var modelData
                             required property int index
+                            readonly property var labels: ({ "highway": "Highway", "obstacle": "Obstacle", "pedestrian": "Pedestrian",
+                                                              "parking": "Parking", "overtake": "Overtaking", "laneavoid": "Lane avoid" })
                             Layout.fillWidth: true
                             Layout.minimumWidth: 0
                             Layout.preferredWidth: 0
-                            text: modelData.key.charAt(0).toUpperCase() + modelData.key.slice(1)
+                            text: labels[modelData.key] || modelData.name
                             highlighted: root.mgr.selected === index
                             enabled: !root.mgr.running
                             onClicked: root.mgr.selected = index

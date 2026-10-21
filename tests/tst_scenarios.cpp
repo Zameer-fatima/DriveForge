@@ -18,7 +18,7 @@ class ScenarioTest : public QObject {
     Q_OBJECT
 private slots:
     void catalogIsComplete() {
-        QCOMPARE(scenarioCatalog().size(), size_t(4));
+        QCOMPARE(scenarioCatalog().size(), size_t(6));
         for (const ScenarioInfo& info : scenarioCatalog()) {
             QVERIFY(!info.name.empty());
             QVERIFY(!info.params.empty());
@@ -143,6 +143,45 @@ private slots:
         QVERIFY(r.metrics.at("min_separation_m") >= 2.0);
         QVERIFY(r.metrics.at("max_lane_offset_m") <= 0.5);
         QCOMPARE(r.endReason, std::string("duration reached"));
+    }
+
+    // ---- autonomous overtaking and lane-change avoidance ----
+    void overtakeScenarioPassesAndAlsoWhenTheLeftIsBlocked() {
+        for (double blocked : {0.0, 1.0}) {
+            const ScenarioReport r = ScenarioRunner::runHeadless(ScenarioId::Overtake, {{"blockLeft", blocked}});
+            QVERIFY2(r.passed(), qPrintable(QString::fromStdString(r.toMarkdown())));
+            QCOMPARE(r.metrics.at("overtook"), 1.0);
+            QCOMPARE(r.endReason, std::string("overtake complete"));
+        }
+    }
+
+    void overtakeScenarioFailsWhenThereIsNothingToOvertake() {
+        // The lead is as fast as the set speed: the car correctly stays behind it, so "overtook" cannot be met.
+        const ScenarioReport r = ScenarioRunner::runHeadless(ScenarioId::Overtake, {{"leadSpeed", 90.0}, {"accSpeed", 90.0}, {"duration", 40.0}});
+        QCOMPARE(int(r.outcome), int(Outcome::Fail));
+        const Criterion* c = criterion(r, "Overtook the slower car");
+        QVERIFY(c && !c->passed);
+        QCOMPARE(r.metrics.at("collisions"), 0.0);
+    }
+
+    void laneAvoidScenarioChangesLaneAroundTheObstacle() {
+        const ScenarioReport r = ScenarioRunner::runHeadless(ScenarioId::LaneAvoid);
+        QVERIFY2(r.passed(), qPrintable(QString::fromStdString(r.toMarkdown())));
+        QCOMPARE(r.metrics.at("passed"), 1.0);
+        QCOMPARE(r.metrics.at("aeb_braked"), 0.0);
+    }
+
+    void laneAvoidScenarioBrakesWhenThereIsNoRoomToSwerve() {
+        const ScenarioReport r = ScenarioRunner::runHeadless(ScenarioId::LaneAvoid, {{"distance", 60.0}});
+        QVERIFY2(r.passed(), qPrintable(QString::fromStdString(r.toMarkdown())));  // stopping short is an acceptable, collision-free outcome
+        QCOMPARE(r.metrics.at("passed"), 0.0);
+        QCOMPARE(r.metrics.at("aeb_braked"), 1.0);
+    }
+
+    void laneAvoidScenarioWithCarsAlongsideIsSafe() {
+        const ScenarioReport r = ScenarioRunner::runHeadless(ScenarioId::LaneAvoid, {{"blockSides", 1.0}});
+        QVERIFY2(r.passed(), qPrintable(QString::fromStdString(r.toMarkdown())));
+        QCOMPARE(r.metrics.at("collisions"), 0.0);
     }
 
     void parkingVariantsPass() {

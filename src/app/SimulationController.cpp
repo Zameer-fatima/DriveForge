@@ -146,6 +146,9 @@ void SimulationController::toggleLka() {
 void SimulationController::toggleAeb() {
     if (!lockedByScenario()) sim_.adas().request(AdasRequest::ToggleAeb);
 }
+void SimulationController::toggleOvertake() {
+    if (!lockedByScenario()) sim_.adas().request(AdasRequest::ToggleOvertake);
+}
 void SimulationController::nextTimeGap() {
     if (!lockedByScenario()) sim_.adas().request(AdasRequest::AccNextTimeGap);
 }

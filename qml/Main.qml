@@ -83,6 +83,8 @@ ApplicationWindow {
             case Qt.Key_C: sim.toggleAcc(); break
             case Qt.Key_K: sim.toggleLka(); break
             case Qt.Key_B: sim.toggleAeb(); break
+            case Qt.Key_U: sim.toggleOvertake(); break
+            case Qt.Key_Home: scene.resetCamera(); break
             case Qt.Key_Q: sim.laneChange(-1); break
             case Qt.Key_E: sim.laneChange(1); break
             case Qt.Key_Plus: case Qt.Key_Equal: sim.accSpeed(1); break
@@ -141,6 +143,7 @@ ApplicationWindow {
         Btn { text: sim.running ? "Pause (P)" : "Resume (P)"; onClicked: sim.togglePause() }
         Btn { text: "Reset (Backspace)"; onClicked: sim.reset() }
         Btn { text: panel.visible ? "Hide graphs (T)" : "Show graphs (T)"; onClicked: panel.visible = !panel.visible }
+        Btn { text: "Reset camera (Home)"; onClicked: scene.resetCamera() }
         Btn { text: "Scenarios (F2)"; highlighted: sim.scenarios.running; onClicked: scenarioPanel.visible = !scenarioPanel.visible }
         Btn { text: "Recorded real data (F3)"; onClicked: window.showRecorded(true) }
         Label { text: "DRIVER ASSISTANCE"; color: "#c9d6e3"; font.pixelSize: 11; Layout.topMargin: 8
@@ -149,6 +152,7 @@ ApplicationWindow {
         Btn { text: sim.accEnabled ? "ACC: ON (C)" : "ACC: off (C)"; highlighted: sim.accEnabled; onClicked: sim.toggleAcc() }
         Btn { text: sim.lkaEnabled ? "Lane keeping: ON (K)" : "Lane keeping: off (K)"; highlighted: sim.lkaEnabled; onClicked: sim.toggleLka() }
         Btn { text: sim.aebArmed ? "AEB: armed (B)" : "AEB: OFF (B)"; highlighted: sim.aebArmed; onClicked: sim.toggleAeb() }
+        Btn { text: sim.overtakeEnabled ? "Auto overtake: ON (U)" : "Auto overtake: off (U)"; highlighted: sim.overtakeEnabled; onClicked: sim.toggleOvertake() }
         RowLayout {
             Layout.fillWidth: true
             Btn { text: "◀ Lane (Q)"; enabled: sim.lkaEnabled; onClicked: sim.laneChange(-1) }
@@ -171,8 +175,9 @@ ApplicationWindow {
         color: "white"
         style: Text.Outline; styleColor: "#80000000"
         text: "W/↑ throttle   S/↓/Space brake   A/D or ←/→ steer   R drive/reverse\n" +
-              "M autonomous   C ACC (+/- speed, G time gap)   K lane keeping   Q/E lane change   B AEB\n" +
+              "M autonomous   U auto-overtake   C ACC (+/- speed, G time gap)   K lane keeping   Q/E lane change   B AEB\n" +
               "O obstacle   H pedestrian   V lead car   L parking lot   X clear   N park assist   Y park   F2 scenarios\n" +
+              "Mouse: drag = orbit camera   wheel = zoom   double-click or Home = reset camera\n" +
               "Mode: " + (sim.autonomous ? "AUTONOMOUS" : "MANUAL") + " · data: SIMULATED · " + window.fps + " fps · graphics " + ["low", "medium", "high"][scene.quality] + " (F4)"
               + (sim.collisions > 0 ? " · collisions: " + sim.collisions : "") + (sim.running ? "" : "\nPAUSED")
     }
@@ -195,7 +200,7 @@ ApplicationWindow {
 
     Rectangle {
         visible: sim.parked
-        anchors { horizontalCenter: parent.horizontalCenter; top: parent.top; topMargin: 60 }
+        anchors { horizontalCenter: parent.horizontalCenter; top: parent.top; topMargin: 105 }
         width: parkedText.implicitWidth + 40; height: 44; radius: 8
         color: "#e01e8a4a"
         Label {
@@ -208,7 +213,7 @@ ApplicationWindow {
 
     Rectangle {
         visible: sim.parkingActive
-        anchors { horizontalCenter: parent.horizontalCenter; top: parent.top; topMargin: 60 }
+        anchors { horizontalCenter: parent.horizontalCenter; top: parent.top; topMargin: 105 }
         width: parkText.implicitWidth + 40; height: 44; radius: 8
         color: "#e01f5fa8"
         Label {
@@ -221,7 +226,7 @@ ApplicationWindow {
 
     Rectangle {
         visible: sim.aebWarning
-        anchors { horizontalCenter: parent.horizontalCenter; top: parent.top; topMargin: 130 }
+        anchors { horizontalCenter: parent.horizontalCenter; top: parent.top; topMargin: 175 }
         width: aebText.implicitWidth + 40; height: 50; radius: 8
         color: sim.aebBraking ? "#e0d02020" : "#e0e08a00"
         Label {
@@ -234,8 +239,8 @@ ApplicationWindow {
 
     Label {
         visible: !sim.ignition
-        anchors { horizontalCenter: parent.horizontalCenter; top: parent.top; topMargin: 60 }
-        text: "Ignition is OFF — press I to start the engine, then W / ↑ for throttle"
+        anchors { horizontalCenter: parent.horizontalCenter; top: parent.top; topMargin: 105 }
+        text: "Ignition OFF: press I, then W for throttle"
         color: "#ffd166"; font.pixelSize: 20; font.bold: true
         style: Text.Outline; styleColor: "#cc000000"
     }

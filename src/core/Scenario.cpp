@@ -59,6 +59,20 @@ std::vector<ScenarioInfo> buildCatalog() {
                   {"freeBays", "Free bays (1 both, 2 bay 4, 3 bay 7)", "", 1, 1, 3, 1},
                   {"maxOffset", "Allowed final offset", "m", 0.4, 0.2, 1.0, 0.1},
                   {"timeout", "Time limit", "s", 120, 30, 240, 10}}});
+    c.push_back({ScenarioId::Overtake, "overtake", "Autonomous overtaking",
+                 "Autonomous mode catches a slower car, overtakes it in a free lane, and returns to its own lane.",
+                 {{"accSpeed", "Set speed (also start speed)", "km/h", 100, 60, 130, 5},
+                  {"leadSpeed", "Slower car's speed", "km/h", 60, 20, 90, 5},
+                  {"gap", "Initial gap", "m", 100, 60, 200, 10},
+                  {"blockLeft", "A car alongside on the left (1 = yes)", "", 0, 0, 1, 1},
+                  {"duration", "Time limit", "s", 90, 40, 150, 5}}});
+    c.push_back({ScenarioId::LaneAvoid, "laneavoid", "Obstacle avoidance by lane change",
+                 "A stationary obstacle appears ahead in the lane. Autonomous mode changes lane around it, or stops if no lane is free.",
+                 {{"speed", "Speed", "km/h", 80, 50, 120, 5},
+                  {"distance", "Obstacle appears this far ahead", "m", 110, 60, 140, 5},
+                  {"appearAt", "Appears at", "s", 4, 1, 20, 1},
+                  {"blockSides", "Cars alongside in both side lanes (1 = yes)", "", 0, 0, 1, 1},
+                  {"duration", "Time limit", "s", 60, 30, 90, 5}}});
     return c;
 }
 }  // namespace

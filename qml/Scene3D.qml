@@ -32,6 +32,12 @@ View3D {
     property real cameraYaw: parkingView ? 0 : -sim.headingDeg
     Behavior on cameraYaw { NumberAnimation { duration: 350; easing.type: Easing.OutQuad } }
 
+    // Mouse camera: drag to orbit the car, wheel to zoom, double-click (or Home) to reset. Applied on top of any preset.
+    property real orbitYaw: 0       // degrees around the car
+    property real orbitPitch: 0     // degrees of extra elevation (negative = lower)
+    property real orbitZoom: 1.0    // distance multiplier
+    function resetCamera() { orbitYaw = 0; orbitPitch = 0; orbitZoom = 1.0 }
+
     // Screenshot presets (--camera): chase (default), front, rear, side, top, closeup
     readonly property string preset: startupCamera
     readonly property var presets: ({
@@ -396,22 +402,46 @@ View3D {
         emergency: view.sim.aebBraking
     }
 
-    // ---- follow camera: the rig sits on the car, yaw is smoothed; the arm swings round for the parking view / presets ----
+    // ---- follow camera: the rig sits on the car and follows its heading smoothly. The arm swings the camera round the car
+    // (parking view, presets and the mouse), the pitch node lifts or lowers it, and the camera sits at a distance on that arm. ----
     Node {
         position: Qt.vector3d(view.sim.posX, 0, -view.sim.posY)
         eulerRotation.y: view.usePreset ? -view.sim.headingDeg : view.cameraYaw
         Node {
-            eulerRotation.y: view.usePreset ? view.cam.yaw : view.lerp(0, -38)
-            PerspectiveCamera {
-                id: followCamera
-                position: view.usePreset ? Qt.vector3d(view.cam.x, view.cam.y, view.cam.z)
-                                         : Qt.vector3d(0, view.lerp(3.2, 15), view.lerp(8.5, 16))
-                eulerRotation.x: view.usePreset ? view.cam.pitch : view.lerp(-10, -38)
-                fieldOfView: view.usePreset ? view.cam.fov : 58
-                clipNear: 0.2
-                clipFar: 3000
+            eulerRotation.y: (view.usePreset ? view.cam.yaw : view.lerp(0, -38)) + view.orbitYaw
+            Node {
+                eulerRotation.x: -view.orbitPitch
+                PerspectiveCamera {
+                    id: followCamera
+                    readonly property vector3d basePosition: view.usePreset ? Qt.vector3d(view.cam.x, view.cam.y, view.cam.z)
+                                                                            : Qt.vector3d(0, view.lerp(3.2, 15), view.lerp(8.5, 16))
+                    position: basePosition.times(view.orbitZoom)
+                    eulerRotation.x: view.usePreset ? view.cam.pitch : view.lerp(-10, -38)
+                    fieldOfView: view.usePreset ? view.cam.fov : 58
+                    clipNear: 0.2
+                    clipFar: 3000
+                }
             }
         }
     }
     camera: followCamera
+
+    MouseArea {
+        id: orbitMouse
+        anchors.fill: parent
+        acceptedButtons: Qt.LeftButton | Qt.RightButton | Qt.MiddleButton
+        cursorShape: pressed ? Qt.ClosedHandCursor : Qt.OpenHandCursor
+        property real lastX: 0
+        property real lastY: 0
+        onPressed: mouse => { lastX = mouse.x; lastY = mouse.y }
+        onPositionChanged: mouse => {
+            if (!pressed) return
+            view.orbitYaw -= (mouse.x - lastX) * 0.35                                   // drag right: the camera swings left round the car
+            view.orbitPitch = Math.max(-14, Math.min(70, view.orbitPitch + (mouse.y - lastY) * 0.30))  // drag down: look from higher up
+            lastX = mouse.x
+            lastY = mouse.y
+        }
+        onWheel: wheel => { view.orbitZoom = Math.max(0.35, Math.min(3.0, view.orbitZoom * (wheel.angleDelta.y > 0 ? 0.9 : 1.1))) }
+        onDoubleClicked: view.resetCamera()
+    }
 }

@@ -89,7 +89,7 @@ Rectangle {
         }
 
         Chip {
-            text: "MODE " + (root.sim.autonomous ? "AUTONOMOUS" : "MANUAL")
+            text: "MODE " + (root.sim.autonomous ? "AUTONOMOUS" + (root.sim.overtakeText !== "" ? " · " + root.sim.overtakeText : (root.sim.overtakeEnabled ? "" : " · overtaking off")) : "MANUAL")
             tone: root.sim.autonomous ? "#4cc3ff" : "#c9d6e3"
         }
         Chip {

@@ -9,6 +9,7 @@ add_library(driveforge_core STATIC
     Aeb.cpp Aeb.h
     Acc.cpp Acc.h
     LaneKeeping.cpp LaneKeeping.h
+    Overtaking.cpp Overtaking.h
     Longitudinal.cpp Longitudinal.h
     Parking.cpp Parking.h
     Adas.cpp Adas.h

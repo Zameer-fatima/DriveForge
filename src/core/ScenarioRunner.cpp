@@ -41,6 +41,12 @@ void ScenarioRunner::start(Simulation& sim, ScenarioId id, const ParamMap& overr
     aebFirstTime_ = -1.0;
     aebBraked_ = autonomousDropped_ = false;
     aebWasArmed_ = true;
+    manoeuvreSeen_ = false;
+    idleSince_ = -1.0;
+    obstacleSpawned_ = false;
+    minSpeed_ = 1e9;
+    targetY_ = 0.0;
+    targetSeen_ = false;
 
     const Road& road = sim.world().road();
     const double egoLen = sim.vehicle().params().length;
@@ -55,6 +61,7 @@ void ScenarioRunner::start(Simulation& sim, ScenarioId id, const ParamMap& overr
         leadSpeed_ = p_["leadSpeed"] * kKmh;
         targetId_ = sim.world().add(World::makeVehicle(road.laneCenter(egoLane_), p_["gap"] + egoLen, leadSpeed_));
         sim.adas().setAutonomousSetpoint(p_["accSpeed"] * kKmh, p_["timeGap"]);
+        sim.adas().request(AdasRequest::ToggleOvertake);  // this scenario tests following, so no overtaking
         sim.adas().request(AdasRequest::ToggleAutonomous);
         break;
     }
@@ -94,6 +101,29 @@ void ScenarioRunner::start(Simulation& sim, ScenarioId id, const ParamMap& overr
         sim.adas().request(AdasRequest::StartParking);
         break;
     }
+    case ScenarioId::Overtake: {
+        timeLimit_ = p_["duration"];
+        sim.vehicle().reset(0.0, 0.0, 0.0, p_["accSpeed"] * kKmh);
+        egoLane_ = road.laneIndexAt(0.0);
+        targetId_ = sim.world().add(World::makeVehicle(road.laneCenter(egoLane_), p_["gap"] + egoLen, p_["leadSpeed"] * kKmh));
+        if (p_["blockLeft"] >= 0.5 && egoLane_ > 0)  // keeps pace beside us, so the left lane is not available
+            sim.world().add(World::makeVehicle(road.laneCenter(egoLane_ - 1), 0.0, p_["accSpeed"] * kKmh));
+        sim.adas().setAutonomousSetpoint(p_["accSpeed"] * kKmh, 1.8);
+        sim.adas().request(AdasRequest::ToggleAutonomous);
+        break;
+    }
+    case ScenarioId::LaneAvoid: {
+        timeLimit_ = p_["duration"];
+        sim.vehicle().reset(0.0, 0.0, 0.0, p_["speed"] * kKmh);
+        egoLane_ = road.laneIndexAt(0.0);
+        if (p_["blockSides"] >= 0.5) {
+            if (egoLane_ > 0) sim.world().add(World::makeVehicle(road.laneCenter(egoLane_ - 1), 0.0, p_["speed"] * kKmh));
+            if (egoLane_ + 1 < road.laneCount) sim.world().add(World::makeVehicle(road.laneCenter(egoLane_ + 1), 0.0, p_["speed"] * kKmh));
+        }
+        sim.adas().setAutonomousSetpoint(p_["speed"] * kKmh, 1.8);
+        sim.adas().request(AdasRequest::ToggleAutonomous);
+        break;
+    }
     }
 }
 
@@ -106,20 +136,40 @@ void ScenarioRunner::beforeStep(Simulation& sim) {
             if (WorldObject* lead = sim.world().find(targetId_)) lead->vy = leadSpeed_;
         }
     }
+    if (id_ == ScenarioId::LaneAvoid && !obstacleSpawned_ && elapsed_ >= p_["appearAt"]) {
+        // The obstacle appears ahead in the car's own lane, within sensor range.
+        const Road& road = sim.world().road();
+        const double egoLen = sim.vehicle().params().length;
+        targetId_ = sim.world().add(World::makeObstacle(road.laneCenter(egoLane_), sim.vehicle().state().y + p_["distance"] + egoLen / 2.0 + 0.5));
+        obstacleSpawned_ = true;
+    }
 }
 
 void ScenarioRunner::track(Simulation& sim) {
     const VehicleState& s = sim.vehicle().state();
     const AdasStatus& a = sim.adas().status();
 
-    if (const WorldObject* target = sim.world().find(targetId_))
+    if (const WorldObject* target = sim.world().find(targetId_)) {
         minSeparation_ = std::min(minSeparation_, separation(s, sim.vehicle().params(), *target));
+        targetY_ = target->y;
+        targetSeen_ = true;
+    }
     maxLateral_ = std::max(maxLateral_, std::abs(s.lateralAcceleration));
     if (s.speed > 0.5) maxDecel_ = std::max(maxDecel_, -s.acceleration);
     stoppedFor_ = std::abs(s.speed) < 0.05 ? stoppedFor_ + kStep : 0.0;
     if (a.aebBraking) {
         aebBraked_ = true;
         if (aebFirstTime_ < 0.0) aebFirstTime_ = s.time;
+    }
+    if (id_ == ScenarioId::LaneAvoid && obstacleSpawned_) minSpeed_ = std::min(minSpeed_, s.speed);
+    if (a.overtakePhase != OvertakePhase::Idle) {
+        manoeuvreSeen_ = true;
+        idleSince_ = -1.0;
+    } else if (manoeuvreSeen_ && idleSince_ < 0.0) {
+        idleSince_ = s.time;
+    }
+    if (id_ == ScenarioId::Overtake || id_ == ScenarioId::LaneAvoid) {
+        if (elapsed_ > 0.5 && a.mode != DriveMode::Autonomous) autonomousDropped_ = true;
     }
     if (id_ == ScenarioId::Highway) {
         const Road& road = sim.world().road();
@@ -152,6 +202,18 @@ void ScenarioRunner::afterStep(Simulation& sim) {
         const WorldObject* o = sim.world().find(targetId_);
         if (stoppedFor_ >= 3.0 && elapsed_ > 1.0) finish(sim, "vehicle stopped", false);
         else if (o && s.y > o->y + 15.0) finish(sim, "pedestrian passed", false);
+        else if (elapsed_ >= timeLimit_) finish(sim, "time limit", false);
+        break;
+    }
+    case ScenarioId::Overtake:
+        if (manoeuvreSeen_ && idleSince_ >= 0.0 && elapsed_ - idleSince_ >= 3.0) finish(sim, "overtake complete", false);
+        else if (elapsed_ >= timeLimit_) finish(sim, "time limit", false);
+        break;
+    case ScenarioId::LaneAvoid: {
+        const WorldObject* o = obstacleSpawned_ ? sim.world().find(targetId_) : nullptr;
+        if (stoppedFor_ >= 2.0 && elapsed_ > 1.0) finish(sim, "vehicle stopped", false);
+        else if (manoeuvreSeen_ && idleSince_ >= 0.0 && elapsed_ - idleSince_ >= 3.0) finish(sim, "manoeuvre complete", false);
+        else if (!manoeuvreSeen_ && o && s.y > o->y + 60.0) finish(sim, "obstacle passed", false);
         else if (elapsed_ >= timeLimit_) finish(sim, "time limit", false);
         break;
     }
@@ -233,6 +295,43 @@ void ScenarioRunner::evaluate(Simulation& sim, bool timedOut) {
         add("Clearance to the pedestrian", ">= 0.5 m", fmt("minimum %.2f m", minSeparation_), minSeparation_ >= 0.5);
         add("Braking within limits", "deceleration <= 9 m/s²", fmt("maximum %.1f m/s²", maxDecel_), maxDecel_ <= 9.0);
         if (!aebWasArmed_) report_.notes.push_back("AEB was disabled for this run.");
+        break;
+    }
+    case ScenarioId::Overtake: {
+        const Road& road = sim.world().road();
+        const bool overtook = targetSeen_ && s.y > targetY_ + 5.0;
+        const double offset = std::abs(s.x - road.laneCenter(egoLane_));
+        add("Overtook the slower car", "ahead of it at the end", overtook ? "overtook it" : "still behind it", overtook);
+        add("Returned to its original lane", "within 0.5 m of the lane centre", fmt("offset %.2f m", offset), offset <= 0.5);
+        add("Safe distance while passing", ">= 1.0 m to the car at all times", fmt("minimum %.1f m", minSeparation_), minSeparation_ >= 1.0);
+        add("Comfortable and smooth", "lateral acceleration <= 3 m/s², no emergency braking", fmt("max %.2f m/s², ", maxLateral_) + (aebBraked_ ? "AEB braked" : "no AEB braking"), maxLateral_ <= 3.0 && !aebBraked_);
+        add("Autonomous mode stayed engaged", "no disengagement", autonomousDropped_ ? "disengaged" : "engaged throughout", !autonomousDropped_);
+        report_.metrics["final_lane_offset_m"] = offset;
+        report_.metrics["overtook"] = overtook ? 1.0 : 0.0;
+        break;
+    }
+    case ScenarioId::LaneAvoid: {
+        const Road& road = sim.world().road();
+        const bool blocked = p_["blockSides"] >= 0.5;
+        const double offset = std::abs(s.x - road.laneCenter(egoLane_));
+        add("The obstacle appeared", "within the time limit", obstacleSpawned_ ? "appeared" : "never appeared", obstacleSpawned_);
+        add("Clearance to the obstacle", ">= 0.5 m", fmt("minimum %.2f m", minSeparation_), obstacleSpawned_ && minSeparation_ >= 0.5);
+        add("Comfortable steering", "lateral acceleration <= 3 m/s²", fmt("maximum %.2f m/s²", maxLateral_), maxLateral_ <= 3.0);
+        const bool passed = targetSeen_ && s.y > targetY_;
+        const bool stopped = std::abs(s.speed) < 0.1;
+        const double minKmh = minSpeed_ > 1e8 ? 0.0 : minSpeed_ / kKmh;
+        // Either outcome is acceptable if it is collision-free: drive around the obstacle, or stop short of it when there is no
+        // room for a lane change (too close, or no free lane).
+        add("Avoided the obstacle", "drove past it, or stopped short of it", passed ? fmt("drove past, slowest %.0f km/h", minKmh) : (stopped ? "stopped short of it" : "neither passed nor stopped"), passed || stopped);
+        if (passed && !blocked) {
+            add("No emergency braking", "AEB not needed when there is room to change lane", aebBraked_ ? "AEB braked" : "no AEB braking", !aebBraked_);
+            add("Returned to its original lane", "within 0.5 m of the lane centre", fmt("offset %.2f m", offset), offset <= 0.5);
+        }
+        if (blocked)
+            report_.notes.push_back("Side lanes were occupied: the car may slow down and change lane once a gap opens, or stop. Either is acceptable if it is collision-free.");
+        report_.metrics["passed"] = passed ? 1.0 : 0.0;
+        add("Autonomous mode stayed engaged", "no disengagement", autonomousDropped_ ? "disengaged" : "engaged throughout", !autonomousDropped_);
+        report_.metrics["final_lane_offset_m"] = offset;
         break;
     }
     case ScenarioId::Parking: {

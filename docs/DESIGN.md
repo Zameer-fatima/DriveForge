@@ -90,7 +90,7 @@ converted to pedals by inverting the longitudinal model. Lead = vehicle or obsta
 Lane change: reference offset follows `x0 + Δ (1 − cos πt/T) / 2`, T = 4 s, with heading feed-forward; refused if the target lane has an object
 closer than `12 m + 2 s · closing` ahead or `10 m + 2.5 s · closing` behind, or there is no lane.
 
-**Modes** (`Adas`): Manual (each assist is optional) or Autonomous (ACC 80 km/h + lane keeping + AEB; driver pedals ignored).
+**Modes** (`Adas`): Manual (each assist is optional) or Autonomous (ACC 80 km/h + lane keeping + AEB + overtaking; driver pedals ignored).
 Brake or steering input in Autonomous mode is a takeover back to Manual. In Manual, driver braking cancels ACC and driver steering suspends
 lane keeping. Ignition off, reverse gear, lost lane markings, or a collision disengage assists.
 
@@ -131,6 +131,8 @@ so the GUI's live run and the command line give identical numbers (same code, fi
 | Obstacle | Driver holds the throttle towards a static obstacle (own lane, or another lane) | same lane: no collision, clearance ≥ 0.3 m, stopped; other lane: no collision, no false AEB braking |
 | Pedestrian | Pedestrian steps out of the right kerb at a set TTC and walks across | no collision; clearance ≥ 0.5 m; deceleration ≤ 9 m/s² |
 | Parking | Car finds a free bay and parks | parked in time; no collision; offset ≤ limit; heading within 5°; inside the lines |
+| Overtaking | Autonomous mode catches a slower car, passes it, and returns (optionally with a car alongside on the left) | no collision; overtook it; back in its lane (≤ 0.5 m); gap ≥ 1 m; lateral accel ≤ 3 m/s², no AEB; autonomous mode stays on |
+| Lane avoid | A stationary obstacle appears ahead in the lane (optionally with cars alongside in both side lanes) | no collision; clearance ≥ 0.5 m; drove past it (no AEB, back in lane) or stopped short of it; lateral accel ≤ 3 m/s² |
 
 Distances are bumper-to-bumper via `separation()` (ground truth, used only for scoring, never by the ADAS).
 Parameters are clamped to their ranges. Reports (`ScenarioReport`) render to Markdown and JSON and carry every measured metric;
@@ -194,3 +196,43 @@ with depth haze, filmic tone mapping, bloom, ambient occlusion and soft shadows.
 and the detail of background cars. Qt Quick only renders when something changes, so the on-screen fps figure is only meaningful while the scene moves
 (60 fps driving on this GPU at high quality; 40 fps in the busiest view, the parking lot with eight cars, at high; 60 on low).
 `--camera front|rear|side|top|closeup` places the camera for screenshots.
+
+## Autonomous overtaking and obstacle avoidance
+
+`Overtaking` is a small decision module that runs inside `Adas::update` in Autonomous mode only (not while the driver steers, and not while
+parking). It never steers: it asks the lane-keeping controller for a lane change and later for the return, and ACC and AEB stay active underneath.
+
+**Triggers** (each checks the lead in the car's own lane, found by the lane its centre is in):
+- *Stationary obstacle* (highest priority): within 140 m, with room to swerve: the gap must be at least `2.5 s × speed + 8 m` (a lane change takes 4 s, but
+  the car is braking meanwhile). Closer than that, braking is the only option and ACC / AEB handle it. It is checked **in every phase** (idle, or
+  while passing; a lane change already under way finishes first), ignores the cooldown, and still works down to 2.5 m/s, because waiting for a gap
+  means slowing down. (An earlier version only looked for obstacles when idle, so an obstacle placed mid-overtake made the car brake to a stop.)
+- *Slower vehicle*: the lead is at least 3 m/s slower than the set speed, the car is not pulling away from it, it is within
+  `max(45 m, 3 s × speed)`, and this has held for 1 s (and the 4 s cooldown has passed).
+
+**Choosing a side**: towards the *home lane* first if the car is not in it, otherwise left, then right. A side is acceptable only if lane keeping's own
+safety rule allows it (no car close ahead or behind in that lane, scaled by closing speed) **and** the lane is clear far enough ahead (as far as the
+thing being passed plus 30 m, at least 80 m). For an obstacle only stationary things make a lane unsuitable (a moving car ahead is fine: ACC follows it,
+which beats stopping); for overtaking a slower car, slower traffic also counts, or there would be no point. If neither side qualifies, the planner
+warns once ("no free lane yet") and ACC slows the car; it keeps looking, and moves over as soon as a gap opens (for example when a slow car beside it
+drops behind), and this works at low speed too.
+
+**Home lane**: the lane the car was in when Autonomous mode started (or the lane of a lane change the driver asked for). After any manoeuvre, including
+chains of them (overtake, then an obstacle while passing), the car returns to it, one lane at a time, when it is free.
+
+**Phases**: Idle → ChangingOut → Passing → ChangingBack → Idle (4 s cooldown). While passing it tracks the target by id; once the target is behind
+(or out of range behind) it asks to return to the home lane, retrying every 0.5 s until it is free, and gives up after 45 s. A driver steering or
+braking is a takeover and clears everything. A manual Q/E lane change is refused while the planner is manoeuvring.
+
+Known limits: a lane change cannot be redirected half-way (the planner waits for it to finish, then reacts); there is no "creep" to pull out around an
+obstacle from a standstill; and when a slow car is alongside in the only free lane, the car has to drop back behind it, which can mean slowing a lot.
+
+**Why it was built this way**: keeping the decision separate from the manoeuvre means the manoeuvre (path, safety rule, indicators) is exactly the one
+that is already tested for manual lane changes, and the planner can be tested by watching the closed loop. `LaneKeeping::canChangeLane` was split out of
+`startLaneChange` so the planner can ask "would this be allowed?" without side effects.
+
+## Camera
+
+The follow camera is a chain of nodes: a rig on the car (follows its heading smoothly), an arm that swings the camera round the car (parking view, `--camera` presets
+and the mouse), a pitch node that raises or lowers it, and the camera itself at a distance along that arm. Mouse: drag orbits (yaw unlimited, elevation −14° to +70°),
+the wheel scales the distance (0.35× to 3×), double-click or Home resets. It is applied on top of the parking view and the presets.

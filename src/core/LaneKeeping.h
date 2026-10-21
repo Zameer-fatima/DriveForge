@@ -34,7 +34,9 @@ public:
     void engage(const VehicleState& state);
     void disengage();
 
-    // dir: -1 left, +1 right. Returns false with a reason if refused.
+    // dir: -1 left, +1 right. Would a lane change be allowed right now? (No state is changed.) False with a reason if not.
+    bool canChangeLane(int dir, const VehicleState& state, const SensorReadings& sensors, std::string* reason) const;
+    // Starts the manoeuvre if canChangeLane() allows it. Returns false with a reason if refused.
     bool startLaneChange(int dir, const VehicleState& state, const SensorReadings& sensors, std::string* reason);
 
     LkaOutput update(const VehicleState& state, const VehicleParams& params, double dt);

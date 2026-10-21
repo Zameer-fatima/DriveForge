@@ -7,6 +7,7 @@
 #include "Acc.h"
 #include "EventDetector.h"
 #include "LaneKeeping.h"
+#include "Overtaking.h"
 #include "Parking.h"
 #include "VehicleModel.h"
 
@@ -26,6 +27,7 @@ enum class AdasRequest {
     AccNextTimeGap,
     ToggleParkingAssist,
     StartParking,
+    ToggleOvertake,
 };
 
 struct AdasConfig {
@@ -33,6 +35,7 @@ struct AdasConfig {
     ParkingConfig parking;
     AccConfig acc;
     LkaConfig lka;
+    OvertakeConfig overtake;
     Road road;
     double autonomousSetSpeed = 80.0 / 3.6;  // m/s
     double accMinSetSpeed = 30.0 / 3.6;
@@ -62,6 +65,10 @@ struct AdasStatus {
     bool laneChanging = false;
     int laneChangeDir = 0;  // -1 left, +1 right while changing lanes
     double lkaOffset = 0.0;
+
+    bool overtakeEnabled = true;  // autonomous overtaking / obstacle avoidance allowed in Autonomous mode
+    OvertakePhase overtakePhase = OvertakePhase::Idle;
+    std::string overtakeText;     // what the autonomous planner is doing, for the dashboard
 
     bool parkingEnabled = false;
     bool parkingActive = false;  // the assist is driving the car
@@ -101,6 +108,7 @@ private:
     Aeb aeb_;
     ParkingAssist parking_;
     LaneKeeping lka_;
+    Overtaking overtake_;
     AdasStatus status_;
     std::vector<AdasRequest> pending_;
     std::vector<Event> events_;

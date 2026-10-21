@@ -29,6 +29,42 @@ bool hasEvent(Simulation& sim, const char* text, std::vector<Event>* sink = null
     return false;
 }
 void clearEvents(Simulation& sim) { sim.takeEvents(); hasEvent(sim, "\x01"); }
+
+// ---- helpers for the autonomous overtaking tests ----
+struct Drive {
+    double maxLat = 0.0, minSpeed = 1e9, minX = 1e9, maxX = -1e9;
+    bool aeb = false;
+    std::vector<std::string> events;
+};
+bool saw(const Drive& d, const char* text) {
+    for (const std::string& e : d.events)
+        if (e.find(text) != std::string::npos) return true;
+    return false;
+}
+// Steps the simulation, tracking comfort and position, collecting event texts. `each` runs before every step.
+template <typename F>
+Drive driveFor(Simulation& sim, double seconds, F each) {
+    Drive d;
+    const int n = static_cast<int>(seconds / kDt);
+    for (int i = 0; i < n; ++i) {
+        each(sim);
+        sim.step(kDt);
+        const VehicleState& s = sim.vehicle().state();
+        d.maxLat = std::max(d.maxLat, std::abs(s.lateralAcceleration));
+        d.minSpeed = std::min(d.minSpeed, s.speed);
+        d.minX = std::min(d.minX, s.x);
+        d.maxX = std::max(d.maxX, s.x);
+        d.aeb = d.aeb || sim.adas().status().aebBraking;
+        for (const Event& e : sim.takeEvents()) d.events.push_back(e.message);
+    }
+    return d;
+}
+void startAutonomous(Simulation& sim, double kmh) {
+    sim.driver().ignition = true;
+    sim.vehicle().reset(0.0, 0.0, 0.0, kmh / 3.6);
+    sim.adas().request(AdasRequest::ToggleAutonomous);
+}
+
 }  // namespace
 
 class AdasTest : public QObject {
@@ -387,9 +423,11 @@ private slots:
     }
 
     void autonomousFollowsLeadAndAvoidsObstacle() {
+        // This test is about following and stopping, so autonomous overtaking is switched off here.
         Simulation sim;
         sim.driver().ignition = true;
         sim.adas().request(AdasRequest::ToggleAutonomous);
+        sim.adas().request(AdasRequest::ToggleOvertake);
         sim.spawnLeadVehicle(80.0, 10.0);
         run(sim, 90.0);
         QCOMPARE(sim.collisions(), 0);
@@ -398,6 +436,7 @@ private slots:
         Simulation sim2;
         sim2.driver().ignition = true;
         sim2.adas().request(AdasRequest::ToggleAutonomous);
+        sim2.adas().request(AdasRequest::ToggleOvertake);
         sim2.spawnObstacle(600.0);
         run(sim2, 80.0);
         QCOMPARE(sim2.collisions(), 0);
@@ -455,6 +494,219 @@ private slots:
         QCOMPARE(sim.collisions(), 0);
         QVERIFY(sim.adas().status().aebArmed);
         QCOMPARE(sim.vehicle().state().speed, 0.0);
+    }
+
+    // ---- Autonomous overtaking and obstacle avoidance ----
+    void autonomousOvertakesASlowerCarAndReturns() {
+        Simulation sim;
+        startAutonomous(sim, 80.0);
+        const int leadId = sim.spawnLeadVehicle(80.0, 50.0 / 3.6);
+        bool passedLead = false;
+        const Drive d = driveFor(sim, 60.0, [&](Simulation& s) {
+            const WorldObject* lead = s.world().find(leadId);
+            if (lead && s.vehicle().state().y > lead->y + 6.0 && std::abs(s.vehicle().state().x) > 3.0) passedLead = true;
+        });
+        QCOMPARE(sim.collisions(), 0);
+        QVERIFY(d.minX < -3.0);                  // it used the left lane
+        QVERIFY(passedLead);                     // and was fully past the car while in that lane
+        QVERIFY(std::abs(sim.vehicle().state().x) < 0.2);  // and is back in its own lane
+        QCOMPARE(int(sim.adas().status().overtakePhase), int(OvertakePhase::Idle));
+        QVERIFY(!d.aeb);
+        QVERIFY2(d.maxLat < 3.0, qPrintable(QString("lateral accel %1").arg(d.maxLat)));
+        QVERIFY(saw(d, "overtaking a slower vehicle on the left"));
+        QVERIFY(saw(d, "returning to the original lane"));
+        QVERIFY(saw(d, "manoeuvre complete"));
+    }
+
+    void overtakingCanBeSwitchedOff() {
+        Simulation sim;
+        startAutonomous(sim, 80.0);
+        sim.adas().request(AdasRequest::ToggleOvertake);
+        sim.spawnLeadVehicle(80.0, 50.0 / 3.6);
+        const Drive d = driveFor(sim, 45.0, [](Simulation&) {});
+        QCOMPARE(sim.collisions(), 0);
+        QVERIFY(std::abs(d.minX) < 0.2 && std::abs(d.maxX) < 0.2);  // never left its lane
+        QVERIFY(std::abs(sim.vehicle().state().speed - 50.0 / 3.6) < 0.7);  // follows at the lead's speed
+        QVERIFY(saw(d, "overtaking OFF"));
+    }
+
+    void doesNotOvertakeACarThatIsBarelySlower() {
+        Simulation sim;
+        startAutonomous(sim, 80.0);
+        sim.spawnLeadVehicle(80.0, 77.0 / 3.6);  // 3 km/h slower: not worth passing
+        const Drive d = driveFor(sim, 40.0, [](Simulation&) {});
+        QVERIFY(std::abs(d.minX) < 0.2 && std::abs(d.maxX) < 0.2);
+    }
+
+    void overtakesOnTheRightWhenTheLeftIsTaken() {
+        Simulation sim;
+        startAutonomous(sim, 80.0);
+        sim.spawnLeadVehicle(80.0, 50.0 / 3.6);
+        sim.world().add(World::makeVehicle(-3.6, 0.0, 80.0 / 3.6));  // keeps pace beside us on the left
+        const Drive d = driveFor(sim, 60.0, [](Simulation&) {});
+        QCOMPARE(sim.collisions(), 0);
+        QVERIFY(d.maxX > 3.0);       // used the right lane
+        QVERIFY(d.minX > -0.5);      // never the left
+        QVERIFY(std::abs(sim.vehicle().state().x) < 0.2);
+        QVERIFY(saw(d, "on the right"));
+    }
+
+    void keepsFollowingWhenNeitherSideLaneIsFree() {
+        Simulation sim;
+        startAutonomous(sim, 80.0);
+        const double slow = 50.0 / 3.6;
+        sim.spawnLeadVehicle(80.0, slow);
+        sim.world().add(World::makeVehicle(-3.6, 80.0, slow));  // slow cars abreast of the lead, in both side lanes
+        sim.world().add(World::makeVehicle(3.6, 80.0, slow));
+        const Drive d = driveFor(sim, 40.0, [](Simulation&) {});
+        QCOMPARE(sim.collisions(), 0);
+        QVERIFY(std::abs(d.minX) < 0.2 && std::abs(d.maxX) < 0.2);
+        QVERIFY(!saw(d, "Lane change refused"));  // no spam: the planner checks before asking
+    }
+
+    void obstacleAppearingAheadIsAvoidedByChangingLane() {
+        Simulation sim;
+        startAutonomous(sim, 80.0);
+        bool spawned = false;
+        const Drive d = driveFor(sim, 40.0, [&](Simulation& s) {
+            if (!spawned && s.vehicle().state().time >= 3.0) {
+                s.spawnObstacle(110.0);
+                spawned = true;
+            }
+        });
+        QCOMPARE(sim.collisions(), 0);
+        QVERIFY(d.minX < -3.0);                                // went round it
+        QVERIFY2(d.minSpeed > 70.0 / 3.6, qPrintable(QString("slowest %1 km/h").arg(d.minSpeed * 3.6)));  // without braking hard
+        QVERIFY(!d.aeb);
+        QVERIFY(d.maxLat < 3.0);
+        QVERIFY(std::abs(sim.vehicle().state().x) < 0.2);      // and returned
+        QVERIFY(saw(d, "to avoid the obstacle"));
+    }
+
+    void obstacleWithNoFreeLaneMakesTheCarStop() {
+        Simulation sim;
+        startAutonomous(sim, 80.0);
+        sim.world().add(World::makeObstacle(-3.6, 150.0));  // a wall of obstacles across all three lanes
+        sim.world().add(World::makeObstacle(0.0, 150.0));
+        sim.world().add(World::makeObstacle(3.6, 150.0));
+        const Drive d = driveFor(sim, 60.0, [](Simulation&) {});
+        QCOMPARE(sim.collisions(), 0);
+        QVERIFY(sim.vehicle().state().speed < 0.1);
+        QVERIFY(std::abs(d.minX) < 0.2 && std::abs(d.maxX) < 0.2);  // no lane change attempted
+        QVERIFY(saw(d, "no free lane"));
+    }
+
+    void obstacleTooCloseForALaneChangeIsHandledByBraking() {
+        Simulation sim;
+        startAutonomous(sim, 80.0);
+        bool spawned = false;
+        const Drive d = driveFor(sim, 30.0, [&](Simulation& s) {
+            if (!spawned && s.vehicle().state().time >= 3.0) {
+                s.spawnObstacle(50.0);  // too close to swerve round at this speed
+                spawned = true;
+            }
+        });
+        QCOMPARE(sim.collisions(), 0);
+        QVERIFY(std::abs(d.minX) < 0.2 && std::abs(d.maxX) < 0.2);  // it did not try
+        QVERIFY(sim.vehicle().state().speed < 0.1);
+        QVERIFY(d.aeb);
+    }
+
+    void obstacleDuringAnOvertakeIsStillAvoidedAtAnyMoment() {
+        // The reported bug: with an obstacle placed while the car was mid-overtake (in the passing lane), it used to stop dead.
+        for (double delay : {0.5, 2.0, 4.0, 6.0, 8.0, 10.0, 12.0, 15.0}) {
+            Simulation sim;
+            sim.driver().ignition = true;
+            sim.vehicle().reset(0.0, 0.0, 0.0, 0.0);
+            sim.adas().request(AdasRequest::ToggleAutonomous);
+            run(sim, 10.0);  // accelerate to the set speed
+            sim.spawnLeadVehicle(60.0, 50.0 / 3.6);
+            const double t0 = sim.vehicle().state().time;
+            bool placed = false;
+            const Drive d = driveFor(sim, 80.0, [&](Simulation& sm) {
+                if (!placed && sm.vehicle().state().time - t0 >= delay) {
+                    sm.spawnObstacle(120.0);
+                    placed = true;
+                }
+            });
+            const QString what = QString("obstacle %1 s after the lead car").arg(delay);
+            QVERIFY2(sim.collisions() == 0, qPrintable(what + ": collision"));
+            QVERIFY2(sim.vehicle().state().speed > 70.0 / 3.6, qPrintable(what + QString(": ended at %1 km/h").arg(sim.vehicle().state().speed * 3.6)));
+            QVERIFY2(d.minSpeed > 2.0, qPrintable(what + QString(": stopped, slowest %1 km/h").arg(d.minSpeed * 3.6)));
+            QVERIFY2(std::abs(sim.vehicle().state().x) < 0.3, qPrintable(what + QString(": not back in its lane, x = %1").arg(sim.vehicle().state().x)));
+        }
+    }
+
+    void startingFromStandstillWithAnObstacleAheadStillGetsAround() {
+        Simulation sim;
+        startAutonomous(sim, 0.0);
+        sim.spawnObstacle(80.0);
+        const Drive d = driveFor(sim, 60.0, [](Simulation&) {});
+        QCOMPARE(sim.collisions(), 0);
+        QVERIFY(sim.vehicle().state().y > 80.0 + 10.0);  // got past it
+        QVERIFY(d.maxLat < 3.0);
+    }
+
+    void aLaneChangeTheDriverAsksForBecomesTheHomeLane() {
+        Simulation sim;
+        startAutonomous(sim, 80.0);
+        run(sim, 2.0);
+        sim.adas().request(AdasRequest::LaneChangeRight);
+        run(sim, 10.0);
+        QVERIFY(std::abs(sim.vehicle().state().x - 3.6) < 0.2);
+        run(sim, 25.0);  // the planner must not drag the car back to the lane it started in
+        QVERIFY(std::abs(sim.vehicle().state().x - 3.6) < 0.2);
+    }
+
+    void manualLaneKeepingAndAccNeverOvertake() {
+        Simulation sim;
+        sim.driver().ignition = true;
+        sim.vehicle().reset(0.0, 0.0, 0.0, 80.0 / 3.6);
+        sim.adas().request(AdasRequest::ToggleLka);
+        sim.adas().request(AdasRequest::ToggleAcc);
+        sim.spawnLeadVehicle(80.0, 50.0 / 3.6);
+        const Drive d = driveFor(sim, 40.0, [](Simulation&) {});
+        QVERIFY(std::abs(d.minX) < 0.2 && std::abs(d.maxX) < 0.2);
+    }
+
+    void driverSteeringCancelsAnAutonomousOvertake() {
+        Simulation sim;
+        startAutonomous(sim, 80.0);
+        sim.spawnLeadVehicle(80.0, 50.0 / 3.6);
+        int guard = 0;
+        while (sim.adas().status().overtakePhase != OvertakePhase::ChangingOut && guard++ < 120 * 30) sim.step(kDt);
+        QCOMPARE(int(sim.adas().status().overtakePhase), int(OvertakePhase::ChangingOut));
+        sim.driver().steer = 0.5;  // the driver grabs the wheel
+        run(sim, 0.2);
+        QCOMPARE(int(sim.adas().status().mode), int(DriveMode::Manual));
+        QCOMPARE(int(sim.adas().status().overtakePhase), int(OvertakePhase::Idle));
+    }
+
+    void overtakesFromTheLeftmostLaneUsingTheRight() {
+        Simulation sim;
+        sim.driver().ignition = true;
+        sim.vehicle().reset(-3.6, 0.0, 0.0, 80.0 / 3.6);
+        sim.adas().request(AdasRequest::ToggleAutonomous);
+        sim.spawnLeadVehicle(80.0, 50.0 / 3.6);
+        const Drive d = driveFor(sim, 60.0, [](Simulation&) {});
+        QCOMPARE(sim.collisions(), 0);
+        QVERIFY(d.maxX > -0.2);        // moved right, into the middle lane
+        QVERIFY(d.minX > -3.8);        // never left the road on the left
+        QVERIFY(std::abs(sim.vehicle().state().x + 3.6) < 0.2);  // back in the leftmost lane
+    }
+
+    void overtakingIsDeterministic() {
+        double x[2], y[2];
+        for (int k = 0; k < 2; ++k) {
+            Simulation sim;
+            startAutonomous(sim, 80.0);
+            sim.spawnLeadVehicle(80.0, 50.0 / 3.6);
+            run(sim, 40.0);
+            x[k] = sim.vehicle().state().x;
+            y[k] = sim.vehicle().state().y;
+        }
+        QCOMPARE(x[0], x[1]);
+        QCOMPARE(y[0], y[1]);
     }
 
     void deterministicRuns() {

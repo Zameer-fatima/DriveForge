@@ -15,12 +15,17 @@ std::string kmh(double ms) {
 }  // namespace
 
 Adas::Adas(AdasConfig config)
-    : config_(std::move(config)), aeb_(config_.aeb), parking_(config_.parking, config_.road), lka_(config_.lka, config_.road) {
+    : config_(std::move(config)),
+      aeb_(config_.aeb),
+      parking_(config_.parking, config_.road),
+      lka_(config_.lka, config_.road),
+      overtake_(config_.overtake, config_.road) {
     reset();
 }
 
 void Adas::reset() {
     aeb_.reset();
+    overtake_.reset();
     parking_.reset();
     lka_.disengage();
     const bool armed = true;
@@ -45,6 +50,7 @@ void Adas::note(Severity severity, const std::string& message) { events_.push_ba
 
 void Adas::disengageAll(const std::string& reason) {
     parking_.abort(reason);
+    overtake_.reset();
     const bool any = status_.accEnabled || status_.lkaEnabled || status_.mode == DriveMode::Autonomous;
     status_.accEnabled = false;
     status_.lkaEnabled = false;
@@ -55,6 +61,7 @@ void Adas::disengageAll(const std::string& reason) {
 }
 
 void Adas::releaseAll() {
+    overtake_.reset();
     status_.accEnabled = false;
     status_.lkaEnabled = false;
     status_.lkaOverridden = false;
@@ -134,6 +141,11 @@ void Adas::handle(AdasRequest r, const ControlInput& driver, const VehicleModel&
         startPending_ = true;
         startPendingUntil_ = s.time + 10.0;
         break;
+    case AdasRequest::ToggleOvertake:
+        status_.overtakeEnabled = !status_.overtakeEnabled;
+        if (!status_.overtakeEnabled) overtake_.reset();
+        note(Severity::Info, status_.overtakeEnabled ? "Autonomous overtaking ON" : "Autonomous overtaking OFF (it will follow slower traffic and stop for obstacles)");
+        break;
     case AdasRequest::ToggleAeb:
         status_.aebArmed = !status_.aebArmed;
         if (!status_.aebArmed) aeb_.reset();
@@ -162,11 +174,13 @@ void Adas::handle(AdasRequest r, const ControlInput& driver, const VehicleModel&
             status_.accEnabled = false;
             status_.lkaEnabled = false;
             lka_.disengage();
+            overtake_.reset();
             note(Severity::Info, "Autonomous mode OFF, manual control");
         } else if (!canEngage) refuse("Autonomous mode unavailable: ignition off or not in Drive");
         else if (!sensors.cameraOk) refuse("Autonomous mode unavailable: lane markings not visible");
         else {
             lka_.engage(s);
+            overtake_.reset();
             status_.lkaEnabled = true;
             status_.accEnabled = true;
             status_.aebArmed = true;
@@ -179,6 +193,7 @@ void Adas::handle(AdasRequest r, const ControlInput& driver, const VehicleModel&
     case AdasRequest::LaneChangeRight: {
         if (!status_.lkaEnabled) { refuse("Lane change needs Lane keeping (K) or Autonomous mode (M)"); break; }
         if (status_.lkaOverridden) { refuse("Lane change refused: driver is steering"); break; }
+        if (overtake_.phase() != OvertakePhase::Idle) { refuse("Lane change refused: the autonomous planner is already manoeuvring"); break; }
         const int dir = r == AdasRequest::LaneChangeLeft ? -1 : 1;
         std::string why;
         if (lka_.startLaneChange(dir, s, sensors, &why))
@@ -238,6 +253,7 @@ ControlInput Adas::update(const ControlInput& driver, const VehicleModel& vehicl
         status_.lkaEnabled = false;
         status_.lkaOverridden = false;
         lka_.disengage();
+        overtake_.reset();
         note(Severity::Warning, "Driver takeover: Autonomous mode OFF");
     } else if (status_.accEnabled && driverBraking && status_.mode == DriveMode::Manual) {
         status_.accEnabled = false;
@@ -274,6 +290,24 @@ ControlInput Adas::update(const ControlInput& driver, const VehicleModel& vehicl
         if (driver.throttle >= 0.05 && !autonomous) out.brake = driver.brake;
     }
 
+    // Autonomous overtaking and obstacle avoidance: decides when to ask lane keeping for a lane change, and when to return.
+    if (autonomous && status_.overtakeEnabled && status_.lkaEnabled && !status_.lkaOverridden && !parking_.active()) {
+        const OvertakeOutput plan = overtake_.update(
+            s, sensors, lka_.targetLane(), lka_.laneChanging(), status_.accSetSpeed, dt, [&](int dir) {
+                std::string ignored;
+                return lka_.canChangeLane(dir, s, sensors, &ignored);
+            });
+        for (const OvertakeNote& n : plan.notes) note(n.warning ? Severity::Warning : Severity::Info, n.text);
+        if (plan.requestDir != 0) {
+            std::string why;
+            overtake_.notifyStarted(lka_.startLaneChange(plan.requestDir, s, sensors, &why));
+        }
+    } else if (overtake_.phase() != OvertakePhase::Idle) {
+        overtake_.reset();
+    }
+    status_.overtakePhase = overtake_.phase();
+    status_.overtakeText = overtake_.statusText();
+
     // Lane keeping
     status_.laneChanging = lka_.laneChanging();
     if (status_.lkaEnabled && !status_.lkaOverridden) {
@@ -281,7 +315,11 @@ ControlInput Adas::update(const ControlInput& driver, const VehicleModel& vehicl
         out.steer = lka.steer;
         status_.lkaOffset = lka.offset;
         status_.laneChanging = lka_.laneChanging();
-        if (lka.laneChangeCompleted) note(Severity::Info, "Lane change complete");
+        if (lka.laneChangeCompleted) {
+            note(Severity::Info, "Lane change complete");
+            // A lane change the driver asked for (the planner is idle) makes the new lane the "home" lane.
+            if (autonomous && overtake_.phase() == OvertakePhase::Idle) overtake_.setHomeLane(lka_.targetLane());
+        }
     }
     status_.laneChangeDir = lka_.laneChangeDirection();
     status_.lkaTargetLane = lka_.targetLane();

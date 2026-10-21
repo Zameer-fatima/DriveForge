@@ -57,6 +57,8 @@ class SimulationController : public QObject {
 
     // ADAS
     Q_PROPERTY(bool autonomous READ autonomous NOTIFY stateChanged)
+    Q_PROPERTY(bool overtakeEnabled READ overtakeEnabled NOTIFY stateChanged)
+    Q_PROPERTY(QString overtakeText READ overtakeText NOTIFY stateChanged)
     Q_PROPERTY(bool aebArmed READ aebArmed NOTIFY stateChanged)
     Q_PROPERTY(bool aebWarning READ aebWarning NOTIFY stateChanged)
     Q_PROPERTY(bool aebBraking READ aebBraking NOTIFY stateChanged)
@@ -114,6 +116,8 @@ public:
     int collisions() const { return sim_.collisions(); }
 
     bool autonomous() const { return sim_.adas().status().mode == driveforge::DriveMode::Autonomous; }
+    bool overtakeEnabled() const { return sim_.adas().status().overtakeEnabled; }
+    QString overtakeText() const { return QString::fromStdString(sim_.adas().status().overtakeText); }
     bool aebArmed() const { return sim_.adas().status().aebArmed; }
     bool aebWarning() const { return sim_.adas().status().aebWarning; }
     bool aebBraking() const { return sim_.adas().status().aebBraking; }
@@ -145,6 +149,7 @@ public:
     Q_INVOKABLE void toggleAcc();
     Q_INVOKABLE void toggleLka();
     Q_INVOKABLE void toggleAeb();
+    Q_INVOKABLE void toggleOvertake();
     Q_INVOKABLE void laneChange(int direction);  // -1 left, +1 right
     Q_INVOKABLE void accSpeed(int direction);    // -1 / +1 (5 km/h)
     Q_INVOKABLE void nextTimeGap();
